@@ -30,6 +30,8 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <time.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
 #include <X11/Xatom.h>
@@ -60,7 +62,7 @@
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
 enum { SchemeNorm, SchemeSel }; /* color schemes */
-enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
+enum { NetSupported, NetWMPid, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
 enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
@@ -240,6 +242,7 @@ static char stext[256];
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
 static int bh, blw = 0;      /* bar geometry */
+static int focus_file;
 static int lrpad;            /* sum of left and right padding for text */
 static int (*xerrorxlib)(Display *, XErrorEvent *);
 static unsigned int numlockmask = 0;
@@ -797,6 +800,25 @@ focus(Client *c)
 		grabbuttons(c, 1);
 		XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
 		setfocus(c);
+		// Log focus switch
+		int di;
+		unsigned long dl, extra;
+		unsigned char *p = NULL;
+		Atom da;
+		unsigned int pid;
+		if (XGetWindowProperty(dpy, c->win, netatom[NetWMPid], 0L, -1, False, 0,
+				      &da, &di, &dl, &extra, &p) == Success && p && di) {
+			pid = *(unsigned int *)p;
+			XFree(p);
+			char exe_name[256];
+			char path[64];
+			sprintf(path, "/proc/%d/exe", pid);
+			ssize_t sz = readlink(path, exe_name, sizeof(exe_name) - 1);
+			exe_name[sz] = 0;
+			struct timespec tp;
+			if (!clock_gettime(CLOCK_REALTIME, &tp))
+				dprintf(focus_file, "%lu %lu %u %s\n", (unsigned long) tp.tv_sec, (unsigned long) tp.tv_nsec, pid, exe_name);
+		}
 	} else {
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
 		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
@@ -1555,6 +1577,7 @@ setup(void)
 	wmatom[WMTakeFocus] = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
 	netatom[NetActiveWindow] = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
 	netatom[NetSupported] = XInternAtom(dpy, "_NET_SUPPORTED", False);
+	netatom[NetWMPid] = XInternAtom(dpy, "_NET_WM_PID", False);
 	netatom[NetWMName] = XInternAtom(dpy, "_NET_WM_NAME", False);
 	netatom[NetWMState] = XInternAtom(dpy, "_NET_WM_STATE", False);
 	netatom[NetWMCheck] = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
@@ -1594,6 +1617,10 @@ setup(void)
 	XSelectInput(dpy, root, wa.event_mask);
 	grabkeys();
 	focus(NULL);
+	/* Init focus log file */
+	focus_file = open("/tmp/dwm_focus.log", O_WRONLY|O_APPEND|O_CREAT, 0666);
+	if (focus_file == -1)
+		focus_file = STDOUT_FILENO;
 }
 
 
